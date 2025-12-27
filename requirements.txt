@@ -1,0 +1,7 @@
+# Python dependencies for APK Repackager
+# No external Python packages required - uses only standard library
+
+# Optional: for development
+# pytest>=7.0.0
+# black>=22.0.0
+# pylint>=2.12.0

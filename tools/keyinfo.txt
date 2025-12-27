@@ -1,0 +1,9 @@
+test.jks:
+    pwd: test001
+    alias: testkey
+    alias-pwd: test001
+
+test2.jks:
+    pwd: test002
+    alias: testkey2
+    alias-pwd: test002
