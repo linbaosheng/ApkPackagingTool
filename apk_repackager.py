@@ -7,6 +7,8 @@ APK 自动重打包工具
 import os
 import sys
 import subprocess
+import zipfile
+import shutil
 from pathlib import Path
 from typing import Optional
 import config
@@ -20,14 +22,18 @@ class ApkRepkgError(Exception):
 class ApkRepkg:
     """APK重打包工具类"""
 
-    def __init__(self, apktool_path: str = None):
+    def __init__(self, apktool_path: str = None, apksigner_path: str = None, zipalign_path: str = None):
         """
         初始化APK重打包工具
 
         Args:
             apktool_path: apktool可执行文件路径，默认使用config.py中的配置
+            apksigner_path: apksigner可执行文件路径，默认使用config.py中的配置
+            zipalign_path: zipalign可执行文件路径，默认使用config.py中的配置
         """
         self.apktool_path = apktool_path or config.APKTOOL_PATH
+        self.apksigner_path = apksigner_path or config.APKSIGNER_PATH
+        self.zipalign_path = zipalign_path or config.ZIPALIGN_PATH
 
     def build(self, input_dir: str, output_apk: str) -> str:
         """
@@ -52,9 +58,9 @@ class ApkRepkg:
 
         # 如果是jar文件，使用java -jar运行
         if self.apktool_path.endswith('.jar'):
-            cmd = [config.JAVA_PATH, "-jar", self.apktool_path, "b", input_dir, "-o", output_apk, "--use-aapt2"]
+            cmd = [config.JAVA_PATH, "-jar", self.apktool_path, "b", input_dir, "-o", output_apk]
         else:
-            cmd = [self.apktool_path, "b", input_dir, "-o", output_apk, "--use-aapt2"]
+            cmd = [self.apktool_path, "b", input_dir, "-o", output_apk]
 
         print(f"[INFO] 正在打包: {input_dir}")
         print(f"[INFO] 输出文件: {output_apk}")
@@ -67,8 +73,198 @@ class ApkRepkg:
         print("[INFO] 打包成功")
         return output_apk
 
+    def zip_build(self, input_dir: str, output_apk: str, align: bool = True) -> str:
+        """
+        通过ZIP方式重新打包APK（不使用apktool）
+
+        直接将解压的目录重新压缩为APK，适用于添加DEX文件等场景。
+        优先使用 7z 压缩，回退到 Python zipfile。
+
+        Args:
+            input_dir: 解压后的APK目录路径
+            output_apk: 输出APK路径
+            align: 是否进行zipalign对齐优化（默认True）
+
+        Returns:
+            打包后的APK文件路径
+        """
+        input_dir = os.path.abspath(input_dir)
+        output_apk = os.path.abspath(output_apk)
+
+        if not os.path.isdir(input_dir):
+            raise ApkRepkgError(f"输入目录不存在: {input_dir}")
+
+        manifest_path = os.path.join(input_dir, "AndroidManifest.xml")
+        if not os.path.isfile(manifest_path):
+            raise ApkRepkgError(f"AndroidManifest.xml 不存在: {input_dir}")
+
+        # 先删除可能存在的旧文件
+        if os.path.exists(output_apk):
+            os.remove(output_apk)
+
+        # 尝试使用 7z 压缩（更高效）
+        seven_zip = getattr(config, 'SEVEN_ZIP_PATH', '7z')
+        try:
+            return self._zip_build_with_7z(input_dir, output_apk, seven_zip, align)
+        except FileNotFoundError:
+            print(f"[INFO] 7z 不可用，使用 Python zipfile...")
+            return self._zip_build_with_python(input_dir, output_apk, align)
+
+    def _zip_build_with_7z(self, input_dir: str, output_apk: str, seven_zip: str, align: bool) -> str:
+        """使用 7z 压缩（更高效，体积更小）"""
+        print(f"[INFO] 正在打包 (7z方式): {input_dir}")
+
+        # 需要不压缩的文件扩展名
+        store_extensions = {
+            '.dex', '.so', '.png', '.jpg', '.jpeg', '.gif', '.webp',
+            '.mp3', '.mp4', '.ogg', '.arsc'
+        }
+
+        # 构建文件列表
+        files_to_add = []
+        for root, dirs, files in os.walk(input_dir):
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__MACOSX']
+            if 'META-INF' in dirs:
+                dirs.remove('META-INF')
+
+            for file in files:
+                if file.startswith('.'):
+                    continue
+                file_path = os.path.join(root, file)
+                arcname = os.path.relpath(file_path, input_dir).replace('\\', '/')
+                files_to_add.append((file_path, arcname))
+
+        # 使用 7z 命令压缩
+        temp_list_file = os.path.join(input_dir, '_7z_file_list.txt')
+        try:
+            with open(temp_list_file, 'w', encoding='utf-8') as f:
+                for file_path, arcname in files_to_add:
+                    ext = os.path.splitext(file_path)[1].lower()
+                    # 不压缩的文件用 -mx0
+                    if ext in store_extensions or os.path.basename(file_path) in ('resources.arsc', 'AndroidManifest.xml'):
+                        f.write(f'{file_path}\n')
+                    else:
+                        f.write(f'{file_path}\n')
+
+            # 7z 命令：创建 ZIP，使用 DEFLATE，最高压缩
+            cmd = [
+                seven_zip, 'a', '-tzip',
+                f'-mx={config.ZIP_COMPRESS_LEVEL}',
+                '-mfb=256',
+                '-mpass=15',
+                '-r',
+                output_apk,
+                f'{input_dir}\\*'
+            ]
+
+            # 排除 META-INF 和隐藏文件
+            exclude_args = [
+                '-x!META-INF\\*',
+                '-x!.*',
+                '-x!__MACOSX\\*',
+                '-x!_7z_file_list.txt'
+            ]
+            cmd.extend(exclude_args)
+
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=input_dir)
+            if result.returncode != 0:
+                raise ApkRepkgError(f"7z 压缩失败: {result.stderr}")
+
+        finally:
+            if os.path.exists(temp_list_file):
+                os.remove(temp_list_file)
+
+        print("[INFO] 7z 打包成功")
+
+        if align:
+            self._zipalign(output_apk)
+
+        return output_apk
+
+    def _zip_build_with_python(self, input_dir: str, output_apk: str, align: bool) -> str:
+        """使用 Python zipfile 压缩（回退方案）"""
+        print(f"[INFO] 正在打包 (ZIP方式): {input_dir}")
+        print(f"[INFO] 压缩级别: {config.ZIP_COMPRESS_LEVEL}")
+
+        # 需要以STORE方式存储的文件（不压缩）
+        store_extensions = {
+            '.dex', '.so', '.png', '.jpg', '.jpeg', '.gif', '.webp',
+            '.mp3', '.mp4', '.ogg', '.arsc'
+        }
+
+        store_filenames = {
+            'resources.arsc',
+            'AndroidManifest.xml',
+        }
+
+        with zipfile.ZipFile(output_apk, 'w', zipfile.ZIP_DEFLATED, compresslevel=config.ZIP_COMPRESS_LEVEL) as zf:
+            for root, dirs, files in os.walk(input_dir):
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__MACOSX']
+                if 'META-INF' in dirs:
+                    dirs.remove('META-INF')
+
+                for file in files:
+                    if file.startswith('.'):
+                        continue
+
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, input_dir)
+
+                    ext = os.path.splitext(file)[1].lower()
+                    filename = os.path.basename(file)
+
+                    if ext in store_extensions or filename in store_filenames:
+                        compress_type = zipfile.ZIP_STORED
+                    else:
+                        compress_type = zipfile.ZIP_DEFLATED
+
+                    zf.write(file_path, arcname, compress_type=compress_type)
+
+        print("[INFO] ZIP打包成功")
+
+        if align:
+            self._zipalign(output_apk)
+
+        return output_apk
+
+    def _zipalign(self, apk_path: str) -> None:
+        """
+        对APK进行zipalign对齐优化
+
+        Args:
+            apk_path: APK文件路径（原地修改）
+        """
+        if not os.path.isfile(self.zipalign_path):
+            print(f"[INFO] zipalign 不可用，跳过对齐优化: {self.zipalign_path}")
+            return
+
+        print(f"[INFO] 正在进行zipalign对齐优化...")
+
+        # 创建临时文件
+        temp_apk = apk_path + ".aligned"
+
+        try:
+            cmd = [self.zipalign_path, "-f", "4", apk_path, temp_apk]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+
+            if result.returncode != 0:
+                print(f"[INFO] zipalign 失败，跳过: {result.stderr}")
+                return
+
+            # 替换原文件
+            shutil.move(temp_apk, apk_path)
+            print("[INFO] zipalign 对齐完成")
+
+        except FileNotFoundError:
+            print(f"[INFO] zipalign 不可用，跳过对齐优化")
+        except Exception as e:
+            print(f"[INFO] zipalign 处理失败: {e}")
+            if os.path.exists(temp_apk):
+                os.remove(temp_apk)
+
     def sign(self, apk_path: str, keystore_path: str,
-             storepass: str, alias: str, keypass: Optional[str] = None) -> str:
+             storepass: str, alias: str, keypass: Optional[str] = None,
+             v1_only: bool = False, v2_only: bool = False) -> str:
         """
         签名APK文件
 
@@ -78,6 +274,8 @@ class ApkRepkg:
             storepass: 密钥库密码
             alias: 密钥别名
             keypass: 密钥密码（默认与storepass相同）
+            v1_only: 仅使用V1签名（JAR签名，兼容性好但体积大）
+            v2_only: 仅使用V2签名（APK签名，体积小，Android 7.0+）
 
         Returns:
             签名后的APK文件路径
@@ -94,22 +292,64 @@ class ApkRepkg:
 
         print(f"[INFO] 正在签名: {apk_path}")
 
-        sign_cmd = [
-            "jarsigner",
-            "-verbose",
-            "-sigalg", "SHA256withRSA",
-            "-digestalg", "SHA256",
-            "-keystore", keystore_path,
-            "-storepass", storepass,
-            "-keypass", keypass,
-            apk_path,
-            alias
+        # 确定签名方式（优先使用参数，否则使用config配置）
+        sign_mode = getattr(config, 'SIGN_MODE', 'V1_V2')
+
+        if v1_only:
+            v1_enabled, v2_enabled = "true", "false"
+            print("[INFO] 使用 V1 签名 (JAR签名)")
+        elif v2_only:
+            v1_enabled, v2_enabled = "false", "true"
+            print("[INFO] 使用 V2 签名 (APK签名，体积更小)")
+        elif sign_mode == "V1_ONLY":
+            v1_enabled, v2_enabled = "true", "false"
+            print("[INFO] 使用 V1 签名 (JAR签名) [配置]")
+        elif sign_mode == "V2_ONLY":
+            v1_enabled, v2_enabled = "false", "true"
+            print("[INFO] 使用 V2 签名 (APK签名，体积更小) [配置]")
+        else:  # V1_V2
+            v1_enabled, v2_enabled = "true", "true"
+            print("[INFO] 使用 V1+V2 签名 [配置]")
+
+        # 尝试使用 apksigner（优先），否则使用 jarsigner
+        apksigner_cmd = [
+            self.apksigner_path,
+            "sign",
+            "--ks", keystore_path,
+            "--ks-pass", f"pass:{storepass}",
+            "--ks-key-alias", alias,
+            "--key-pass", f"pass:{keypass}",
+            "--v1-signing-enabled", v1_enabled,
+            "--v2-signing-enabled", v2_enabled,
+            apk_path
         ]
 
-        result = subprocess.run(sign_cmd, capture_output=True, text=True)
+        try:
+            result = subprocess.run(apksigner_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise ApkRepkgError(f"apksigner 签名失败: {result.stderr}")
+        except FileNotFoundError:
+            # apksigner 不可用，回退到 jarsigner
+            print("[INFO] apksigner 不可用，使用 jarsigner...")
+            sign_cmd = [
+                "jarsigner",
+                "-verbose",
+                "-sigalg", "SHA256withRSA",
+                "-digestalg", "SHA256",
+                "-keystore", keystore_path,
+                "-storepass", storepass,
+                "-keypass", keypass,
+                apk_path,
+                alias
+            ]
+            result = subprocess.run(sign_cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
             raise ApkRepkgError(f"签名失败: {result.stderr}")
+
+        # 打印签名输出以便调试
+        if result.stdout:
+            print(result.stdout[:500])  # 只打印前500字符
 
         print("[INFO] 签名成功")
         return apk_path
@@ -156,24 +396,77 @@ class ApkRepkg:
 
         return final_apk
 
+    def repack_zip(self, input_dir: str, output_apk: str,
+                   keystore_path: str = None, storepass: str = None,
+                   alias: str = None, align: bool = None) -> str:
+        """
+        ZIP方式重打包流程：ZIP打包 -> zipalign -> 签名
+
+        直接从解压目录重新压缩并签名，不使用apktool。
+        适用于添加DEX文件、修改资源后的快速重打包。
+
+        Args:
+            input_dir: 解压后的APK目录路径
+            output_apk: 输出APK路径
+            keystore_path: 密钥库文件路径，默认使用config.py配置
+            storepass: 密钥库密码，默认使用config.py配置
+            alias: 密钥别名，默认使用config.py配置
+            align: 是否进行zipalign对齐优化，默认使用config.py配置
+
+        Returns:
+            重打包并签名后的APK文件路径
+        """
+        # 使用配置文件默认值
+        keystore_path = keystore_path or config.DEFAULT_KEYSTORE
+        storepass = storepass or config.DEFAULT_STOREPASS
+        alias = alias or config.DEFAULT_ALIAS
+        align = align if align is not None else getattr(config, 'ZIPALIGN_ENABLED', True)
+
+        print("=" * 50)
+        print("APK ZIP方式重打包工具")
+        print("=" * 50)
+
+        # 1. ZIP打包
+        print("\n[步骤 1/2] ZIP打包")
+        print("-" * 50)
+        built_apk = self.zip_build(input_dir, output_apk, align=align)
+
+        # 2. 签名（使用config.py中的SIGN_MODE配置）
+        print("\n[步骤 2/2] 签名 APK")
+        print("-" * 50)
+        final_apk = self.sign(built_apk, keystore_path, storepass, alias)
+
+        print("\n" + "=" * 50)
+        print("ZIP方式重打包完成！")
+        print(f"输出文件: {final_apk}")
+        print("=" * 50)
+
+        return final_apk
+
 
 def main():
     """命令行入口"""
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="APK自动重打包工具 - 基于apktool",
+        description="APK自动重打包工具 - 基于apktool或ZIP方式",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  # 打包
+  # apktool方式打包
   python apk_repackager.py build -i decoded/ -o app.apk
 
   # 签名
   python apk_repackager.py sign -i app.apk
 
-  # 完整流程（打包+签名），使用配置文件默认值
+  # apktool方式完整流程（打包+签名）
   python apk_repackager.py repack -i decoded/ -o app.apk
+
+  # ZIP方式完整流程（直接压缩+签名，适用于添加DEX）
+  python apk_repackager.py repack-zip -i extracted/ -o app.apk
+
+  # ZIP方式打包（不签名）
+  python apk_repackager.py zip-build -i extracted/ -o app.apk
         """
     )
 
@@ -204,6 +497,21 @@ def main():
     repack_parser.add_argument("-p", "--storepass", default=config.DEFAULT_STOREPASS, help="密钥库密码")
     repack_parser.add_argument("-a", "--alias", default=config.DEFAULT_ALIAS, help=f"密钥别名 (默认: {config.DEFAULT_ALIAS})")
 
+    # zip-build命令
+    zip_build_parser = subparsers.add_parser("zip-build", help="ZIP方式打包（直接压缩，不使用apktool）")
+    zip_build_parser.add_argument("-i", "--input", required=True, help="解压后的APK目录路径")
+    zip_build_parser.add_argument("-o", "--output", required=True, help="输出APK路径")
+    zip_build_parser.add_argument("--no-align", action="store_true", help="跳过zipalign对齐优化")
+
+    # repack-zip命令
+    repack_zip_parser = subparsers.add_parser("repack-zip", help="ZIP方式完整流程（压缩+签名，适用于添加DEX文件）")
+    repack_zip_parser.add_argument("-i", "--input", required=True, help="解压后的APK目录路径")
+    repack_zip_parser.add_argument("-o", "--output", required=True, help="输出APK路径")
+    repack_zip_parser.add_argument("-k", "--keystore", default=config.DEFAULT_KEYSTORE, help=f"密钥库路径 (默认: {config.DEFAULT_KEYSTORE})")
+    repack_zip_parser.add_argument("-p", "--storepass", default=config.DEFAULT_STOREPASS, help="密钥库密码")
+    repack_zip_parser.add_argument("-a", "--alias", default=config.DEFAULT_ALIAS, help=f"密钥别名 (默认: {config.DEFAULT_ALIAS})")
+    repack_zip_parser.add_argument("--no-align", action="store_true", help="跳过zipalign对齐优化")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -226,6 +534,18 @@ def main():
             output = repkg.repack(args.input, args.output, args.keystore, args.storepass, args.alias)
             print(f"\n输出: {output}")
 
+        elif args.command == "zip-build":
+            repkg = ApkRepkg()
+            align = not getattr(args, 'no_align', False)
+            output = repkg.zip_build(args.input, args.output, align=align)
+            print(f"\n输出: {output}")
+
+        elif args.command == "repack-zip":
+            repkg = ApkRepkg()
+            align = not getattr(args, 'no_align', False)
+            output = repkg.repack_zip(args.input, args.output, args.keystore, args.storepass, args.alias, align=align)
+            print(f"\n输出: {output}")
+
         return 0
 
     except ApkRepkgError as e:
@@ -244,16 +564,44 @@ def main():
 if __name__ == "__main__":
     # PyCharm直接运行模式：使用config.py配置
     if len(sys.argv) == 1:
+        print("=" * 50)
+        print("APK 重打包工具 - PyCharm 运行模式")
+        print("=" * 50)
+        print(f"输入目录: {config.INPUT_DIR}")
+        print(f"输出APK:  {config.OUTPUT_APK}")
+        print(f"密钥库:   {config.DEFAULT_KEYSTORE}")
+        print("=" * 50)
+        print("\n请选择操作模式:")
+        print("  1. apktool 方式 (repack) - 反编译目录 → apktool重建 → 签名")
+        print("  2. ZIP 方式 (repack-zip)  - 解压目录 → 直接压缩 → 签名")
+        print("\n输入选择 (1 或 2，默认 1): ", end="")
+
         try:
-            repkg = ApkRepkg()
-            repkg.repack(
-                input_dir=config.INPUT_DIR,
-                output_apk=config.OUTPUT_APK
-            )
+            choice = input().strip()
+
+            if choice == "2":
+                print("\n[模式] ZIP 方式重打包")
+                print("-" * 50)
+                repkg = ApkRepkg()
+                repkg.repack_zip(
+                    input_dir=config.INPUT_DIR,
+                    output_apk=config.OUTPUT_APK
+                )
+            else:
+                print("\n[模式] apktool 方式重打包")
+                print("-" * 50)
+                repkg = ApkRepkg()
+                repkg.repack(
+                    input_dir=config.INPUT_DIR,
+                    output_apk=config.OUTPUT_APK
+                )
+
         except Exception as e:
-            print(f"[错误] {e}")
+            print(f"\n[错误] {e}")
             import traceback
             traceback.print_exc()
+            input("\n按回车键退出...")
     else:
         # 命令行模式
         sys.exit(main())
+
