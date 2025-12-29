@@ -26,6 +26,12 @@ ZIPALIGN_PATH = "./tools/zipalign.exe"  # 默认使用系统PATH中的zipalign�
 # 7z 路径配置（用于ZIP打包，比Python zipfile更高效）
 SEVEN_ZIP_PATH = "C:\\dev\\setup\\tools\\7-Zip\\7z.exe"  # Windows: "7z" 或完整路径如 "C:\\Program Files\\7-Zip\\7z.exe"
 
+# d8 工具路径配置（用于 DEX 转换，支持 JAR/AAR 转 DEX）
+D8_PATH = "C:\\dev\\android\\sdk\\build-tools\\34.0.0\\d8.bat"  # Windows: d8.bat，Linux/Mac: d8
+
+# android.jar 路径配置（d8 转换时的 boot classpath）
+ANDROID_JAR_PATH = "C:\\dev\\android\\sdk\\platforms\\android-34\\android.jar"
+
 # 默认签名配置
 DEFAULT_KEYSTORE = "./tools/test.jks"
 DEFAULT_ALIAS = "testkey"

@@ -227,6 +227,196 @@ class ApkRepkg:
 
         return output_apk
 
+    def aar_to_dex(self, aar_path: str, output_dex: str, output_dir: str = None) -> str:
+        """
+        将 AAR 包转换为 DEX 文件
+
+        流程: AAR → 解压提取 classes.jar → d8 转换 → classes.dex
+
+        Args:
+            aar_path: AAR 文件路径
+            output_dex: 输出 DEX 文件路径
+            output_dir: 临时工作目录（默认使用系统临时目录）
+
+        Returns:
+            转换后的 DEX 文件路径
+        """
+        import tempfile
+
+        aar_path = os.path.abspath(aar_path)
+        output_dex = os.path.abspath(output_dex)
+
+        if not os.path.isfile(aar_path):
+            raise ApkRepkgError(f"AAR 文件不存在: {aar_path}")
+
+        if not aar_path.lower().endswith('.aar'):
+            raise ApkRepkgError(f"输入文件不是 AAR 格式: {aar_path}")
+
+        print(f"[INFO] 正在转换 AAR → DEX")
+        print(f"[INFO] 输入 AAR: {aar_path}")
+        print(f"[INFO] 输出 DEX: {output_dex}")
+
+        # 创建临时工作目录
+        temp_dir = output_dir or tempfile.mkdtemp(prefix="aar_to_dex_")
+        os.makedirs(temp_dir, exist_ok=True)
+
+        try:
+            # 1. 解压 AAR，提取 classes.jar
+            print("[INFO] 步骤 1/3: 解压 AAR 提取 classes.jar")
+            with zipfile.ZipFile(aar_path, 'r') as zf:
+                if 'classes.jar' not in zf.namelist():
+                    raise ApkRepkgError(f"AAR 文件中没有 classes.jar: {aar_path}")
+                zf.extract('classes.jar', path=temp_dir)
+
+            jar_path = os.path.join(temp_dir, 'classes.jar')
+
+            # 2. 使用 d8 将 JAR 转为 DEX
+            print("[INFO] 步骤 2/3: 使用 d8 将 JAR 转换为 DEX")
+
+            d8_cmd = [
+                'java', '-jar', self.apksigner_path.replace('apksigner.bat', '').replace('apksigner', '') + '../build-tools/34.0.0/lib/d8.jar'
+                if os.name == 'nt' and not os.path.isfile(getattr(config, 'D8_PATH', 'd8'))
+                else getattr(config, 'D8_PATH', 'd8'),
+            ]
+
+            # 如果是 .bat 文件，直接调用；否则需要 java -jar
+            d8_path = getattr(config, 'D8_PATH', 'd8')
+            if d8_path.endswith('.bat') or d8_path.endswith('.exe'):
+                d8_cmd = [d8_path]
+            else:
+                d8_cmd = ['java', '-jar', d8_path]
+
+            # 添加 android.jar 作为 boot classpath
+            android_jar = getattr(config, 'ANDROID_JAR_PATH', None)
+            if android_jar and os.path.isfile(android_jar):
+                d8_cmd.extend(['--lib', android_jar])
+
+            d8_cmd.extend([
+                '--output', temp_dir,
+                jar_path
+            ])
+
+            print(f"[INFO] d8 命令: {' '.join(d8_cmd)}")
+            result = subprocess.run(d8_cmd, capture_output=True, text=True)
+
+            if result.returncode != 0:
+                raise ApkRepkgError(f"d8 转换失败: {result.stderr}")
+
+            # 3. 移动 DEX 文件到目标位置
+            print("[INFO] 步骤 3/3: 移动 DEX 文件")
+            dex_source = os.path.join(temp_dir, 'classes.dex')
+
+            if not os.path.isfile(dex_source):
+                # d8 可能生成 classes-1.dex, classes-2.dex 等（多 DEX）
+                dex_files = [f for f in os.listdir(temp_dir) if f.endswith('.dex')]
+                if not dex_files:
+                    raise ApkRepkgError(f"d8 未生成 DEX 文件，输出目录: {temp_dir}")
+                dex_source = os.path.join(temp_dir, dex_files[0])
+
+            # 如果目标目录不存在，创建它
+            os.makedirs(os.path.dirname(output_dex), exist_ok=True)
+
+            # 删除已存在的目标文件
+            if os.path.exists(output_dex):
+                os.remove(output_dex)
+
+            shutil.move(dex_source, output_dex)
+
+            print("[INFO] AAR → DEX 转换成功")
+            return output_dex
+
+        finally:
+            # 清理临时文件（仅当使用系统临时目录时）
+            if output_dir is None:
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception as e:
+                    print(f"[INFO] 清理临时目录失败: {e}")
+
+    def jar_to_dex(self, jar_path: str, output_dex: str, output_dir: str = None) -> str:
+        """
+        将 JAR 文件转换为 DEX 文件
+
+        Args:
+            jar_path: JAR 文件路径
+            output_dex: 输出 DEX 文件路径
+            output_dir: 临时工作目录（默认使用系统临时目录）
+
+        Returns:
+            转换后的 DEX 文件路径
+        """
+        import tempfile
+
+        jar_path = os.path.abspath(jar_path)
+        output_dex = os.path.abspath(output_dex)
+
+        if not os.path.isfile(jar_path):
+            raise ApkRepkgError(f"JAR 文件不存在: {jar_path}")
+
+        if not jar_path.lower().endswith('.jar'):
+            raise ApkRepkgError(f"输入文件不是 JAR 格式: {jar_path}")
+
+        print(f"[INFO] 正在转换 JAR → DEX")
+        print(f"[INFO] 输入 JAR: {jar_path}")
+        print(f"[INFO] 输出 DEX: {output_dex}")
+
+        # 创建临时工作目录
+        temp_dir = output_dir or tempfile.mkdtemp(prefix="jar_to_dex_")
+        os.makedirs(temp_dir, exist_ok=True)
+
+        try:
+            # 使用 d8 将 JAR 转为 DEX
+            print("[INFO] 使用 d8 将 JAR 转换为 DEX")
+
+            d8_path = getattr(config, 'D8_PATH', 'd8')
+            if d8_path.endswith('.bat') or d8_path.endswith('.exe'):
+                d8_cmd = [d8_path]
+            else:
+                d8_cmd = ['java', '-jar', d8_path]
+
+            # 添加 android.jar 作为 boot classpath
+            android_jar = getattr(config, 'ANDROID_JAR_PATH', None)
+            if android_jar and os.path.isfile(android_jar):
+                d8_cmd.extend(['--lib', android_jar])
+
+            d8_cmd.extend([
+                '--output', temp_dir,
+                jar_path
+            ])
+
+            print(f"[INFO] d8 命令: {' '.join(d8_cmd)}")
+            result = subprocess.run(d8_cmd, capture_output=True, text=True)
+
+            if result.returncode != 0:
+                raise ApkRepkgError(f"d8 转换失败: {result.stderr}")
+
+            # 移动 DEX 文件到目标位置
+            dex_source = os.path.join(temp_dir, 'classes.dex')
+
+            if not os.path.isfile(dex_source):
+                # 检查多 DEX 文件
+                dex_files = [f for f in os.listdir(temp_dir) if f.endswith('.dex')]
+                if not dex_files:
+                    raise ApkRepkgError(f"d8 未生成 DEX 文件，输出目录: {temp_dir}")
+                dex_source = os.path.join(temp_dir, dex_files[0])
+
+            os.makedirs(os.path.dirname(output_dex), exist_ok=True)
+
+            if os.path.exists(output_dex):
+                os.remove(output_dex)
+
+            shutil.move(dex_source, output_dex)
+
+            print("[INFO] JAR → DEX 转换成功")
+            return output_dex
+
+        finally:
+            if output_dir is None:
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception as e:
+                    print(f"[INFO] 清理临时目录失败: {e}")
+
     def _zipalign(self, apk_path: str) -> None:
         """
         对APK进行zipalign对齐优化
@@ -467,6 +657,12 @@ def main():
 
   # ZIP方式打包（不签名）
   python apk_repackager.py zip-build -i extracted/ -o app.apk
+
+  # AAR转DEX
+  python apk_repackager.py aar-to-dex -i library.aar -o classes.dex
+
+  # JAR转DEX
+  python apk_repackager.py jar-to-dex -i classes.jar -o classes.dex
         """
     )
 
@@ -512,6 +708,16 @@ def main():
     repack_zip_parser.add_argument("-a", "--alias", default=config.DEFAULT_ALIAS, help=f"密钥别名 (默认: {config.DEFAULT_ALIAS})")
     repack_zip_parser.add_argument("--no-align", action="store_true", help="跳过zipalign对齐优化")
 
+    # aar-to-dex命令
+    aar_to_dex_parser = subparsers.add_parser("aar-to-dex", help="将AAR包转换为DEX文件")
+    aar_to_dex_parser.add_argument("-i", "--input", required=True, help="输入AAR文件路径")
+    aar_to_dex_parser.add_argument("-o", "--output", required=True, help="输出DEX文件路径")
+
+    # jar-to-dex命令
+    jar_to_dex_parser = subparsers.add_parser("jar-to-dex", help="将JAR文件转换为DEX文件")
+    jar_to_dex_parser.add_argument("-i", "--input", required=True, help="输入JAR文件路径")
+    jar_to_dex_parser.add_argument("-o", "--output", required=True, help="输出DEX文件路径")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -544,6 +750,16 @@ def main():
             repkg = ApkRepkg()
             align = not getattr(args, 'no_align', False)
             output = repkg.repack_zip(args.input, args.output, args.keystore, args.storepass, args.alias, align=align)
+            print(f"\n输出: {output}")
+
+        elif args.command == "aar-to-dex":
+            repkg = ApkRepkg()
+            output = repkg.aar_to_dex(args.input, args.output)
+            print(f"\n输出: {output}")
+
+        elif args.command == "jar-to-dex":
+            repkg = ApkRepkg()
+            output = repkg.jar_to_dex(args.input, args.output)
             print(f"\n输出: {output}")
 
         return 0
