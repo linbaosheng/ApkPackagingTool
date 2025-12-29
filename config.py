@@ -27,10 +27,10 @@ ZIPALIGN_PATH = "./tools/zipalign.exe"  # 默认使用系统PATH中的zipalign�
 SEVEN_ZIP_PATH = "C:\\dev\\setup\\tools\\7-Zip\\7z.exe"  # Windows: "7z" 或完整路径如 "C:\\Program Files\\7-Zip\\7z.exe"
 
 # d8 工具路径配置（用于 DEX 转换，支持 JAR/AAR 转 DEX）
-D8_PATH = "C:\\dev\\android\\sdk\\build-tools\\34.0.0\\d8.bat"  # Windows: d8.bat，Linux/Mac: d8
+D8_PATH = "C:\\dev\\android\\sdk\\build-tools\\28.0.3\\d8.bat"  # Windows: d8.bat，Linux/Mac: d8
 
 # android.jar 路径配置（d8 转换时的 boot classpath）
-ANDROID_JAR_PATH = "C:\\dev\\android\\sdk\\platforms\\android-34\\android.jar"
+ANDROID_JAR_PATH = "C:\\dev\\android\\sdk\\platforms\\android-28\\android.jar"
 
 # 默认签名配置
 DEFAULT_KEYSTORE = "./tools/test.jks"
@@ -50,6 +50,25 @@ ZIPALIGN_ENABLED = True  # 是否启用zipalign对齐优化
 # PyCharm直接运行时的配置
 INPUT_DIR = "./apk/app"  # 反编译后的目录路径
 OUTPUT_APK = "./output/app2.apk"  # 输出APK路径
+
+# AAR 转 DEX 配置
+INPUT_AAR = "./aar/PluginJar.aar"  # 输入AAR文件路径
+OUTPUT_DEX = "./output/classes.dex"  # 输出DEX文件路径
+
+# DEX 反编译/编译配置
+INPUT_DEX = "./dex/classes.dex"  # 输入DEX文件路径
+OUTPUT_SMALI_DIR = "./smali/out"  # 输出Smali目录路径
+INPUT_SMALI_DIR = "./smali/out"  # 输入Smali目录路径（用于编译）
+COMPILED_DEX = "./output/compiled.dex"  # 编译后的DEX文件路径
+
+# baksmali/dex2jar 工具路径配置（DEX 反编译）
+# 选项1: baksmali (将 DEX 反编译为 Smali 代码)
+BAKSMALI_PATH = "./tools/baksmali-2.1.3.jar"  # baksmali.jar 路径
+# 选项2: dex2jar (将 DEX 转换为 JAR，可用 JD-GUI 查看)
+DEX2JAR_PATH = "./tools/dex2jar.jar"  # d2j-dex2jar.bat 或 dex2jar.jar 路径
+
+# smali 工具路径配置（Smali 代码编译为 DEX）
+SMALI_PATH = "./tools/smali-2.1.3.jar"  # smali.jar 路径
 
 # 临时文件配置
 TEMP_DIR_PREFIX = "apk_repack_"

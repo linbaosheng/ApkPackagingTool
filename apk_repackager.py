@@ -417,6 +417,112 @@ class ApkRepkg:
                 except Exception as e:
                     print(f"[INFO] 清理临时目录失败: {e}")
 
+    def dex_to_smali(self, dex_path: str, output_dir: str) -> str:
+        """
+        将 DEX 文件反编译为 Smali 代码
+
+        使用 baksmali 工具将 DEX 文件反编译为可读的 Smali 代码
+
+        Args:
+            dex_path: DEX 文件路径
+            output_dir: 输出 Smali 代码目录路径
+
+        Returns:
+            Smali 代码输出目录路径
+        """
+        dex_path = os.path.abspath(dex_path)
+        output_dir = os.path.abspath(output_dir)
+
+        if not os.path.isfile(dex_path):
+            raise ApkRepkgError(f"DEX 文件不存在: {dex_path}")
+
+        if not dex_path.lower().endswith('.dex'):
+            raise ApkRepkgError(f"输入文件不是 DEX 格式: {dex_path}")
+
+        # 检查 baksmali 路径
+        baksmali_path = getattr(config, 'BAKSMALI_PATH', './tools/baksmali.jar')
+        if not os.path.isfile(baksmali_path):
+            raise ApkRepkgError(f"baksmali 工具不存在: {baksmali_path}")
+
+        print(f"[INFO] 正在反编译 DEX → Smali")
+        print(f"[INFO] 输入 DEX: {dex_path}")
+        print(f"[INFO] 输出目录: {output_dir}")
+
+        # 如果输出目录已存在，清空它
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+
+        # 构建 baksmali 命令: java -jar baksmali.jar -o [输出文件夹] dex文件
+        baksmali_cmd = [
+            'java', '-jar', baksmali_path,
+            '-o', output_dir,
+            dex_path
+        ]
+
+        print(f"[INFO] baksmali 命令: {' '.join(baksmali_cmd)}")
+        result = subprocess.run(baksmali_cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            raise ApkRepkgError(f"baksmali 反编译失败: {result.stderr}")
+
+        print("[INFO] DEX → Smali 反编译成功")
+        return output_dir
+
+    def smali_to_dex(self, smali_dir: str, output_dex: str) -> str:
+        """
+        将 Smali 代码文件夹编译为 DEX 文件
+
+        使用 smali 工具将 Smali 代码文件夹编译为 DEX 文件
+
+        Args:
+            smali_dir: Smali 代码目录路径
+            output_dex: 输出 DEX 文件路径
+
+        Returns:
+            编译后的 DEX 文件路径
+        """
+        smali_dir = os.path.abspath(smali_dir)
+        output_dex = os.path.abspath(output_dex)
+
+        if not os.path.isdir(smali_dir):
+            raise ApkRepkgError(f"Smali 目录不存在: {smali_dir}")
+
+        # 检查 smali 路径
+        smali_tool_path = getattr(config, 'SMALI_PATH', './tools/smali.jar')
+        if not os.path.isfile(smali_tool_path):
+            raise ApkRepkgError(f"smali 工具不存在: {smali_tool_path}")
+
+        print(f"[INFO] 正在编译 Smali → DEX")
+        print(f"[INFO] 输入目录: {smali_dir}")
+        print(f"[INFO] 输出 DEX: {output_dex}")
+
+        # 如果目标目录不存在，创建它
+        os.makedirs(os.path.dirname(output_dex), exist_ok=True)
+
+        # 删除已存在的目标文件
+        if os.path.exists(output_dex):
+            os.remove(output_dex)
+
+        # 构建 smali 命令: java -jar smali.jar -o 目标dex文件 [smali文件夹]
+        smali_cmd = [
+            'java', '-jar', smali_tool_path,
+            '-o', output_dex,
+            smali_dir
+        ]
+
+        print(f"[INFO] smali 命令: {' '.join(smali_cmd)}")
+        result = subprocess.run(smali_cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            raise ApkRepkgError(f"smali 编译失败: {result.stderr}")
+
+        if not os.path.isfile(output_dex):
+            raise ApkRepkgError(f"smali 未生成 DEX 文件: {output_dex}")
+
+        print("[INFO] Smali → DEX 编译成功")
+        return output_dex
+
     def _zipalign(self, apk_path: str) -> None:
         """
         对APK进行zipalign对齐优化
@@ -718,6 +824,16 @@ def main():
     jar_to_dex_parser.add_argument("-i", "--input", required=True, help="输入JAR文件路径")
     jar_to_dex_parser.add_argument("-o", "--output", required=True, help="输出DEX文件路径")
 
+    # dex-to-smali命令
+    dex_to_smali_parser = subparsers.add_parser("dex-to-smali", help="将DEX文件反编译为Smali代码")
+    dex_to_smali_parser.add_argument("-i", "--input", required=True, help="输入DEX文件路径")
+    dex_to_smali_parser.add_argument("-o", "--output", required=True, help="输出Smali目录路径")
+
+    # smali-to-dex命令
+    smali_to_dex_parser = subparsers.add_parser("smali-to-dex", help="将Smali代码编译为DEX文件")
+    smali_to_dex_parser.add_argument("-i", "--input", required=True, help="输入Smali目录路径")
+    smali_to_dex_parser.add_argument("-o", "--output", required=True, help="输出DEX文件路径")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -762,6 +878,16 @@ def main():
             output = repkg.jar_to_dex(args.input, args.output)
             print(f"\n输出: {output}")
 
+        elif args.command == "dex-to-smali":
+            repkg = ApkRepkg()
+            output = repkg.dex_to_smali(args.input, args.output)
+            print(f"\n输出目录: {output}")
+
+        elif args.command == "smali-to-dex":
+            repkg = ApkRepkg()
+            output = repkg.smali_to_dex(args.input, args.output)
+            print(f"\n输出: {output}")
+
         return 0
 
     except ApkRepkgError as e:
@@ -786,11 +912,19 @@ if __name__ == "__main__":
         print(f"输入目录: {config.INPUT_DIR}")
         print(f"输出APK:  {config.OUTPUT_APK}")
         print(f"密钥库:   {config.DEFAULT_KEYSTORE}")
+        print(f"输入AAR:  {config.INPUT_AAR}")
+        print(f"输出DEX:  {config.OUTPUT_DEX}")
+        print(f"输入DEX:  {config.INPUT_DEX}")
+        print(f"输出Smali: {config.OUTPUT_SMALI_DIR}")
+        print(f"输入Smali: {config.INPUT_SMALI_DIR}")
         print("=" * 50)
         print("\n请选择操作模式:")
         print("  1. apktool 方式 (repack) - 反编译目录 → apktool重建 → 签名")
         print("  2. ZIP 方式 (repack-zip)  - 解压目录 → 直接压缩 → 签名")
-        print("\n输入选择 (1 或 2，默认 1): ", end="")
+        print("  3. AAR 转 DEX             - AAR包 → DEX文件")
+        print("  4. DEX 转 Smali           - DEX文件 → Smali代码")
+        print("  5. Smali 转 DEX           - Smali代码 → DEX文件")
+        print("\n输入选择 (1/2/3/4/5，默认 1): ", end="")
 
         try:
             choice = input().strip()
@@ -802,6 +936,30 @@ if __name__ == "__main__":
                 repkg.repack_zip(
                     input_dir=config.INPUT_DIR,
                     output_apk=config.OUTPUT_APK
+                )
+            elif choice == "3":
+                print("\n[模式] AAR 转 DEX")
+                print("-" * 50)
+                repkg = ApkRepkg()
+                repkg.aar_to_dex(
+                    aar_path=config.INPUT_AAR,
+                    output_dex=config.OUTPUT_DEX
+                )
+            elif choice == "4":
+                print("\n[模式] DEX 转 Smali")
+                print("-" * 50)
+                repkg = ApkRepkg()
+                repkg.dex_to_smali(
+                    dex_path=config.INPUT_DEX,
+                    output_dir=config.OUTPUT_SMALI_DIR
+                )
+            elif choice == "5":
+                print("\n[模式] Smali 转 DEX")
+                print("-" * 50)
+                repkg = ApkRepkg()
+                repkg.smali_to_dex(
+                    smali_dir=config.INPUT_SMALI_DIR,
+                    output_dex=config.COMPILED_DEX
                 )
             else:
                 print("\n[模式] apktool 方式重打包")

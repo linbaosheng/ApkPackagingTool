@@ -19,3 +19,5 @@ coverage/
 .output
 apk/
 output/
+aar
+smali
